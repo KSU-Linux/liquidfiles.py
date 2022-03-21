@@ -39,7 +39,11 @@ The current supported sub-commands are:
 * __send__: send file(s) to specified user
 * __version__: show version information
 
-To get a sub-command's detailed description, options and usage, use the `-h` or `--help` option:
+To get a sub-command's detailed description, options and usage, use the `-h` or `--help` option.
+
+```console
+liquidfiles <sub-command> --help
+```
 
 ## Config File
 
