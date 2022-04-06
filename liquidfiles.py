@@ -24,7 +24,7 @@ API_KEY = None
 SERVER = None
 
 # Application version
-VERSION = '0.0.1'
+VERSION = '0.0.3'
 
 # Reads user config file and prints output
 def config_print():
@@ -81,7 +81,24 @@ def liquidfiles_attach(server, api_key, filename):
         data=data
     )
     response_json = process_response(response)
-    return response_json["attachment"]["id"]
+    return response_json
+
+# Uses the LiquidFiles Messages API to list available attachments.
+# See https://man.liquidfiles.com/api/attachments/
+def liquidfiles_attachments(server, api_key):
+    api_url = server + '/attachments'
+    auth = requests.auth.HTTPBasicAuth(api_key, 'x')
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    response = requests.get(
+        api_url,
+        headers=headers,
+        auth=auth,
+    )
+    response_json = process_response(response)
+    return response_json
 
 # Uses the LiquidFiles FileLink API to delete attachments.
 # See https://man.liquidfiles.com/api/attachments/delete.html
@@ -117,8 +134,6 @@ def liquidfiles_delete_attachments(server, api_key, attachment_ids):
             print("Unknown - An unknown error ocurred.", file=sys.stderr)
             sys.exit(1)
 
-    sys.exit(0)
-
 # Uses the LiquidFiles FileLink API to delete FileLinks.
 # See https://man.liquidfiles.com/api/filelink_api.html#delete
 def liquidfiles_delete_filelink(server, api_key, filelink_id):
@@ -137,7 +152,6 @@ def liquidfiles_delete_filelink(server, api_key, filelink_id):
     # return JSON output for this call
     if response.status_code == requests.codes.ok:
         print("Success - The FileLink was deleted")
-        sys.exit(0)
     elif response.status_code == requests.codes.unauthorized:
         response.raise_for_status()
     elif response.status_code == requests.codes.not_found:
@@ -166,7 +180,8 @@ def liquidfiles_filelink(server, api_key, expires, is_id, password, download_rec
     if is_id:
         attachment_id = filename.pop()
     else:
-        attachment_id = liquidfiles_attach(server, api_key, filename.pop())
+        response = liquidfiles_attach(server, api_key, filename.pop())
+        attachment_id = response["attachment"]["id"]
 
     data = {
         "link": {
@@ -187,11 +202,11 @@ def liquidfiles_filelink(server, api_key, expires, is_id, password, download_rec
         data=json.dumps(data)
     )
     response_json = process_response(response)
-    return response_json["link"]["url"]
+    return response_json
 
 # Uses the LiquidFiles Messages API to list available FileLinks.
 # See https://man.liquidfiles.com/api/filelink_api.html#list
-def liquidfiles_filelinks(server, api_key, output_format):
+def liquidfiles_filelinks(server, api_key):
     api_url = server + '/link'
     auth = requests.auth.HTTPBasicAuth(api_key, 'x')
     headers = {
@@ -204,11 +219,7 @@ def liquidfiles_filelinks(server, api_key, output_format):
         auth=auth,
     )
     response_json = process_response(response)
-
-    if output_format == 'json':
-        print(json.dumps(response_json, indent=4))
-
-    sys.exit(0)
+    return response_json
 
 # Uses the LiquidFiles File Requests API to request a file.
 # See https://man.liquidfiles.com/api/file_request_api.html
@@ -245,11 +256,28 @@ def liquidfiles_file_request(server, api_key, expires, to, subject, message, mes
         data=json.dumps(data)
     )
     response_json = process_response(response)
-    return response_json["request"]["url"]
+    return response_json
+
+# Uses the LiquidFiles Messages API to show client information.
+# See https://man.liquidfiles.com/api/client_info_request.html
+def liquidfiles_info(server, api_key):
+    api_url = server + '/account'
+    auth = requests.auth.HTTPBasicAuth(api_key, 'x')
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    response = requests.get(
+        api_url,
+        headers=headers,
+        auth=auth,
+    )
+    response_json = process_response(response)
+    return response_json
 
 # Uses the LiquidFiles Messages API to list messages sent to you.
 # See https://man.liquidfiles.com/api/messages/list_messages_and_download_attachments.html
-def liquidfiles_messages(server, api_key, output_format):
+def liquidfiles_messages(server, api_key):
     api_url = server + '/messages/inbox'
     auth = requests.auth.HTTPBasicAuth(api_key, 'x')
     headers = {
@@ -262,20 +290,8 @@ def liquidfiles_messages(server, api_key, output_format):
         auth=auth,
     )
     response_json = process_response(response)
-
-    if output_format == 'json':
-        print(json.dumps(response_json, indent=4))
-
-    ##print("{:<24} {:<24} {:<24} {:<32}".format('id', 'sender', 'subject', 'attachments'))
-    #print('%-24s%-24s%-24s%-s' % ('id', 'sender', 'subject', 'attachments'))
-    #for message in response_json["messages"]:
-    #    attachment_ids = []
-    #    for attachment in message["attachments"]:
-    #        attachment_ids.append(attachment["id"])
-    #    print("{:<24} {:<24} {:<24} {:<32}".format(message["id"], message["sender"], message["subject"], ",".join(attachment_ids)))
-    #    #print('%-24s%-24s%-24s%-s' % (message["id"], message["sender"], message["subject"], ",".join(attachment_ids)))
-    sys.exit(0)
-
+    return response_json
+    
 # Uses the LiquidFiles Message API to upload given files and
 # send a secure message. See https://man.liquidfiles.com/api/messages
 def liquidfiles_send(server, api_key, expires, to, subject, message, message_file, file_type, filenames):
@@ -295,7 +311,8 @@ def liquidfiles_send(server, api_key, expires, to, subject, message, message_fil
 
     if file_type == 'file_names':
         for file in filenames:
-            attach_id = liquidfiles_attach(server, api_key, file)
+            response = liquidfiles_attach(server, api_key, file)
+            attach_id = response["attachment"]["id"]
             attachment_ids.append(attach_id)
     elif file_type == 'directory':
         files = []
@@ -305,7 +322,8 @@ def liquidfiles_send(server, api_key, expires, to, subject, message, message_fil
                 if os.path.isfile(f):
                     files.append(f)
         for file in files:
-            attach_id = liquidfiles_attach(server, api_key, file)
+            response = liquidfiles_attach(server, api_key, file)
+            attach_id = response["attachment"]["id"]
             attachment_ids.append(attach_id)
     elif file_type == 'attachments':
         attachment_ids = filenames
@@ -331,7 +349,7 @@ def liquidfiles_send(server, api_key, expires, to, subject, message, message_fil
         data=json.dumps(data)
     )
     response_json = process_response(response)
-    return response_json["message"]["id"]
+    return response_json
 
 # Takes unparsed command-line arguments and parses them
 # using ArgumentParser. Returns the parsed arguments
@@ -346,13 +364,6 @@ def parse_args(unparsed_args):
             metavar='API_KEY',
             help='API key for LiquidFiles'
             )
-    #shared_parser.add_argument(
-    #        '-q', '--quiet',
-    #        dest='quiet',
-    #        action='store_true',
-    #        default=False,
-    #        help='supress output'
-    #        )
     shared_parser.add_argument(
             '-s', '--server',
             dest='server',
@@ -377,6 +388,9 @@ def parse_args(unparsed_args):
             help='file path to upload'
             )
 
+    # The 'attachments' sub-command arguments
+    attachents_parser = subparsers.add_parser('attachments', help='list available attachments')
+ 
     # The 'config' sub-command arguments
     config_parser = subparsers.add_parser('config', help='manage configuration')
     config_parser.add_argument(
@@ -466,17 +480,9 @@ def parse_args(unparsed_args):
 
     # The 'filelinks' sub-command arguments
     filelinks_parser = subparsers.add_parser('filelinks', help='list available filelinks')
-    filelinks_parser.add_argument(
-            '--format',
-            dest='output_format',
-            choices=['json'],
-            default='json',
-            metavar='FORMAT',
-            help='output string format [%(choices)s] (default: %(default)s)'
-            )
 
     # The 'file-request' sub-command arguments
-    file_request_parser = subparsers.add_parser('file-request', help='send file(s) to specified user')
+    file_request_parser = subparsers.add_parser('file-request', help='send file request to specified user')
     file_request_parser.add_argument(
             '--expires',
             dest='expires',
@@ -516,16 +522,11 @@ def parse_args(unparsed_args):
             help='username or email address to send a file to'
             )
 
+    # The 'info' sub-command arguments
+    info_parser = subparsers.add_parser('info', help='show client information')
+ 
     # The 'messages' sub-command arguments
     messages_parser = subparsers.add_parser('messages', help='list available messages')
-    messages_parser.add_argument(
-            '--format',
-            dest='output_format',
-            choices=['json'],
-            default='json',
-            metavar='FORMAT',
-            help='output string format [%(choices)s] (default: %(default)s)'
-            )
 
     # The 'send' sub-command arguments
     send_parser = subparsers.add_parser('send', help='send file(s) to specified user')
@@ -615,11 +616,18 @@ def process_args(args):
     # Check which sub-command was used and process accordingly
     if args.command == 'attach':
         for f in args.file:
-            attach_id = liquidfiles_attach(
+            response = liquidfiles_attach(
                     server=SERVER,
                     api_key=API_KEY,
                     filename=f)
-            print(attach_id)
+            print(json.dumps(response, indent=4))
+    if args.command == 'attachments':
+        response = liquidfiles_attachments(
+                server=SERVER,
+                api_key=API_KEY,
+                )
+        print(json.dumps(response, indent=4))
+
     if args.command == 'config':
         if args.set_api_key or args.set_server:
             config_set(
@@ -641,7 +649,7 @@ def process_args(args):
                 filelink_id=args.filelink_id
                 )
     if args.command == 'filelink':
-        link_url = liquidfiles_filelink(
+        response = liquidfiles_filelink(
                 server=SERVER,
                 api_key=API_KEY,
                 expires=args.expires,
@@ -651,15 +659,15 @@ def process_args(args):
                 require_authentication=args.require_authentication,
                 filename=args.file
                 )
-        print(link_url)
+        print(json.dumps(response, indent=4))
     if args.command == 'filelinks':
-        liquidfiles_filelinks(
+        response = liquidfiles_filelinks(
                 server=SERVER,
                 api_key=API_KEY,
-                output_format=args.output_format
                 )
+        print(json.dumps(response, indent=4))
     if args.command == 'file-request':
-        link_url = liquidfiles_file_request(
+        response = liquidfiles_file_request(
                 server=SERVER,
                 api_key=API_KEY,
                 expires=args.expires,
@@ -668,15 +676,21 @@ def process_args(args):
                 message=args.message,
                 message_file=args.message_file,
                 )
-        print(link_url)
-    if args.command == 'messages':
-        liquidfiles_messages(
+        print(json.dumps(response, indent=4))
+    if args.command == 'info':
+        response = liquidfiles_info(
                 server=SERVER,
                 api_key=API_KEY,
-                output_format=args.output_format
                 )
+        print(json.dumps(response, indent=4))
+    if args.command == 'messages':
+        response = liquidfiles_messages(
+                server=SERVER,
+                api_key=API_KEY,
+                )
+        print(json.dumps(response, indent=4))
     if args.command == 'send':
-        message_id = liquidfiles_send(
+        response = liquidfiles_send(
                 server=SERVER,
                 api_key=API_KEY,
                 expires=args.expires,
@@ -687,7 +701,7 @@ def process_args(args):
                 file_type=args.file_type,
                 filenames=args.file
                 )
-        print(message_id)
+        print(json.dumps(response, indent=4))
     if args.command == 'version':
         print(VERSION)
 
@@ -722,8 +736,6 @@ def process_response(response):
         for e in response_json["errors"]:
             print(e, file=sys.stderr)
         sys.exit(1)
-
-    #print(json.dumps(json, indent=4))
 
     return response_json
 
