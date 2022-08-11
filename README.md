@@ -29,12 +29,14 @@ liquidfiles.py -s https://liquidfiles.example.com -k ${API_KEY} <sub-command> <o
 The current supported sub-commands are:
 
 * __attach__: upload given files and returns the ids
+* __attachments__: list available attachments
 * __config__: manage configuration
 * __delete-attachments__: deletes the given attachments
 * __delete-filelink__: deletes the given filelink
 * __filelink__: creates filelink for the given files
 * __filelinks__: list available filelinks
 * __file-request__: send file(s) to specified user
+* __info__: show client information
 * __messages__: list available messages
 * __send__: send file(s) to specified user
 * __version__: show version information
