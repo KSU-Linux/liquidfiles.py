@@ -24,7 +24,7 @@ API_KEY = None
 SERVER = None
 
 # Application version
-VERSION = '0.0.3'
+VERSION = '0.0.4'
 
 # Reads user config file and prints output
 def config_print():
@@ -404,7 +404,7 @@ def parse_args(unparsed_args):
             '--set-api-key',
             dest='set_api_key',
             action='store',
-            metavar='KEY',
+            metavar='API_KEY',
             help='configure api key'
             )
     config_parser.add_argument(
@@ -606,12 +606,13 @@ def process_args(args):
         SERVER = args.server
 
     # Verify API_KEY and SERVER are set
-    if not API_KEY:
-        print("Error - API key is required.", file=sys.stderr)
-        sys.exit(1)
-    elif not SERVER:
-        print("Error - Server is required.", file=sys.stderr)
-        sys.exit(1)
+    if args.command != 'config':
+        if not API_KEY:
+            print("Error - API key is required.", file=sys.stderr)
+            sys.exit(1)
+        elif not SERVER:
+            print("Error - Server is required.", file=sys.stderr)
+            sys.exit(1)
 
     # Check which sub-command was used and process accordingly
     if args.command == 'attach':
