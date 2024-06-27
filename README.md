@@ -7,7 +7,6 @@ It is a Python implementation of [liquidfiles_unix](https://github.com/liquidfil
 ## Requirements
 
 * Python >= 3
-* [requests](https://github.com/psf/requests) >= 2.6
 
 ## Installation
 
