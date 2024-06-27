@@ -2,11 +2,15 @@
 
 import argparse
 import configparser
-import datetime
 import json
 import os 
-import requests
+import ssl
 import sys
+from base64 import b64encode
+from datetime import datetime, timedelta
+from http import HTTPStatus
+from http.client import HTTPConnection, HTTPSConnection
+from urllib.parse import urlencode, urlparse
 
 # List of configuration files to read from as
 # well as the order in which they are prioritized
@@ -17,14 +21,14 @@ CONFIG_FILES = [
 ]
 
 # Default expiration for filelinks and messages
-DEFAULT_EXPIRES = (datetime.datetime.now() + datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+DEFAULT_EXPIRES = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
 
 # Global API key and server settings
 API_KEY = None
 SERVER = None
 
 # Application version
-VERSION = '0.0.4'
+VERSION = '0.1.0'
 
 # Reads user config file and prints output
 def config_print():
@@ -55,135 +59,143 @@ def config_set(api_key=None, server=None):
 # that the user provided a properly formated date
 def expire_date(s):
     try:
-        return datetime.datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d")
+        return datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d")
     except ValueError:
         msg = "not a valid date: {0!r}".format(s)
         raise argparse.ArgumentTypeError(msg)
 
+# Creates and returns a new HTTP or HTTPS
+# connection object based on the server provided
+def http_get_client(server):
+    host = urlparse(server).hostname
+    port = urlparse(server).port
+    scheme = urlparse(server).scheme
+    if scheme == 'https':
+        return HTTPSConnection(host, port=port, context=ssl._create_unverified_context())
+    else:
+        return HTTPConnection(host, port=port)
+
+# Prints out HTTP server response status code,
+# phrase, and description
+def http_print_status(response, file=None):
+    status = response.status
+    phrase = HTTPStatus(response.status).phrase
+    description = HTTPStatus(response.status).description \
+            if status != HTTPStatus.UNPROCESSABLE_ENTITY \
+            else 'Something went wrong and the request could not be completed'
+    print(f"{status}: {phrase} - {description}", file=file)
+
+# Submits an HTTP request and returns the server's
+# response as an HTTPResponse object
+def http_request(server, url, method='GET', body=None, headers={}):
+    client = http_get_client(server)
+    client.request(method, url, body=body, headers=headers)
+    return client.getresponse()
+
 # Uses the LiquidFiles Attachment API to upload a file to the
-# server. See https://man.liquidfiles.com/api/attachments
-def liquidfiles_attach(server, api_key, filename):
-    api_url = server + '/attachments/binary_upload'
-    auth = requests.auth.HTTPBasicAuth(api_key, 'x')
-    data = open(filename, "rb")
+# server. See https://docs.liquidfiles.com/api/v4.0/attachments/upload.html
+def liquidfiles_attach(server, api_key, filename, attach_type='message'):
+    api_url = None
+    if attach_type == 'filelink':
+        api_url = '/link/attachments/upload'
+    elif attach_type == 'message':
+        api_url = '/message/attachments/upload'
+    body = open(filename, "rb")
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
+        "Authorization": "Basic {}".format(b64encode(bytes(f"{api_key}:x", "utf-8")).decode("ascii")),
     }
-    params = {
+    params = urlencode({
         "filename": os.path.basename(filename),
-    }
-    response = requests.post(
-        api_url,
-        params=params,
-        headers=headers,
-        auth=auth,
-        data=data
-    )
+    })
+    url = f"{api_url}?{params}"
+
+    response = http_request(server, url, method='POST', body=body, headers=headers)
     response_json = process_response(response)
     return response_json
 
-# Uses the LiquidFiles Messages API to list available attachments.
-# See https://man.liquidfiles.com/api/attachments/
+# Uses the LiquidFiles Attachments API to list available attachments.
+# See https://docs.liquidfiles.com/api/v4.0/attachments
 def liquidfiles_attachments(server, api_key):
-    api_url = server + '/attachments'
-    auth = requests.auth.HTTPBasicAuth(api_key, 'x')
+    url = '/attachments'
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
+        "Authorization": "Basic {}".format(b64encode(bytes(f"{api_key}:x", "utf-8")).decode("ascii")),
     }
-    response = requests.get(
-        api_url,
-        headers=headers,
-        auth=auth,
-    )
+    response = http_request(server, url, method='GET', headers=headers)
     response_json = process_response(response)
     return response_json
 
-# Uses the LiquidFiles FileLink API to delete attachments.
-# See https://man.liquidfiles.com/api/attachments/delete.html
+# Uses the LiquidFiles Attachments API to delete attachments.
+# See https://docs.liquidfiles.com/api/v4.0/attachments
 def liquidfiles_delete_attachments(server, api_key, attachment_ids):
-    api_url = server + '/attachments/'
-    auth = requests.auth.HTTPBasicAuth(api_key, 'x')
+    url = '/attachments/'
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
+        "Authorization": "Basic {}".format(b64encode(bytes(f"{api_key}:x", "utf-8")).decode("ascii")),
     }
 
     for attachment_id in attachment_ids:
-        response = requests.delete(
-            api_url + attachment_id,
-            headers=headers,
-            auth=auth,
-        )
+        response = http_request(server, f"{url}{attachment_id}", method='DELETE', headers=headers)
+
         # Process response manually since the API does not
         # return JSON output for this call
-        if response.status_code == requests.codes.ok:
-            print("Success - The Attachment with ID %s was deleted" % attachment_id)
-        elif response.status_code == requests.codes.unauthorized:
-            response.raise_for_status()
-        elif response.status_code == requests.codes.not_found:
-            print("404: Not Found - The Attachment ID wasn't found.", file=sys.stderr)
+        if response.status == HTTPStatus.OK:
+            print(f"The Attachment with ID {attachment_id} was deleted")
+        elif response.status == HTTPStatus.UNAUTHORIZED:
+            http_print_status(response, file=sys.stderr)
             sys.exit(1)
-        elif response.status_code == requests.codes.unprocessable:
-            print("Not Permitted - The Request wasn't permitted.", file=sys.stderr)
-            sys.exit(1)
-        elif response.status_code == requests.codes.internal_server_error:
-            response.raise_for_status()
+        elif response.status == HTTPStatus.NOT_FOUND:
+            print(f"The Attachment ID {attachment_id} wasn't found", file=sys.stderr)
         else:
-            print("Unknown - An unknown error ocurred.", file=sys.stderr)
+            http_print_status(response, file=sys.stderr)
             sys.exit(1)
 
 # Uses the LiquidFiles FileLink API to delete FileLinks.
-# See https://man.liquidfiles.com/api/filelink_api.html#delete
+# See https://docs.liquidfiles.com/api/v4.0/filelink/#delete
 def liquidfiles_delete_filelink(server, api_key, filelink_id):
-    api_url = server + '/link/' + filelink_id.pop()
-    auth = requests.auth.HTTPBasicAuth(api_key, 'x')
+    url = '/link/' + filelink_id.pop()
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
+        "Authorization": "Basic {}".format(b64encode(bytes(f"{api_key}:x", "utf-8")).decode("ascii")),
     }
-    response = requests.delete(
-        api_url,
-        headers=headers,
-        auth=auth,
-    )
+    response = http_request(server, url, method='DELETE', headers=headers)
+
     # Process response manually since the API does not
     # return JSON output for this call
-    if response.status_code == requests.codes.ok:
-        print("Success - The FileLink was deleted")
-    elif response.status_code == requests.codes.unauthorized:
-        response.raise_for_status()
-    elif response.status_code == requests.codes.not_found:
-        print("404: Not Found - The FileLink ID wasn't found.", file=sys.stderr)
+    if response.status == HTTPStatus.OK:
+        print(f"The FileLink was deleted")
+    elif response.status == HTTPStatus.UNAUTHORIZED:
+        http_print_status(response, file=sys.stderr)
         sys.exit(1)
-    elif response.status_code == requests.codes.unprocessable:
-        print("Not Permitted - The Request wasn't permitted.", file=sys.stderr)
-        sys.exit(1)
-    elif response.status_code == requests.codes.internal_server_error:
-        response.raise_for_status()
+    elif response.status == HTTPStatus.NOT_FOUND:
+        print("The FileLink ID wasn't found", file=sys.stderr)
     else:
-        print("Unknown - An unknown error ocurred.", file=sys.stderr)
+        http_print_status(response, file=sys.stderr)
         sys.exit(1)
 
 # Uses the LiquidFiles FileLink API to create a new FileLink.
-# See https://man.liquidfiles.com/api/filelink_api.html
+# See https://docs.liquidfiles.com/api/v4.0/filelink/#create
 def liquidfiles_filelink(server, api_key, expires, is_id, password, download_receipt, require_authentication, filename):
-    api_url = server + '/link'
+    url = '/link'
     attachment_id = ''
-    auth = requests.auth.HTTPBasicAuth(api_key, 'x')
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
+        "Authorization": "Basic {}".format(b64encode(bytes(f"{api_key}:x", "utf-8")).decode("ascii")),
     }
 
     if is_id:
         attachment_id = filename.pop()
     else:
-        response = liquidfiles_attach(server, api_key, filename.pop())
+        response = liquidfiles_attach(server, api_key, filename.pop(), attach_type='filelink')
         attachment_id = response["attachment"]["id"]
 
-    data = {
+    body = {
         "link": {
             "attachment": attachment_id,
             "expires_at": expires,
@@ -195,41 +207,32 @@ def liquidfiles_filelink(server, api_key, expires, is_id, password, download_rec
     if password:
         data["link"]["password"] = password
 
-    response = requests.post(
-        api_url,
-        headers=headers,
-        auth=auth,
-        data=json.dumps(data)
-    )
+    response = http_request(server, url, method='POST', body=json.dumps(body), headers=headers)
     response_json = process_response(response)
     return response_json
 
-# Uses the LiquidFiles Messages API to list available FileLinks.
-# See https://man.liquidfiles.com/api/filelink_api.html#list
+# Uses the LiquidFiles FileLink API to list available FileLinks.
+# See https://docs.liquidfiles.com/api/v4.0/filelink/#list
 def liquidfiles_filelinks(server, api_key):
-    api_url = server + '/link'
-    auth = requests.auth.HTTPBasicAuth(api_key, 'x')
+    url = '/link'
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
+        "Authorization": "Basic {}".format(b64encode(bytes(f"{api_key}:x", "utf-8")).decode("ascii")),
     }
-    response = requests.get(
-        api_url,
-        headers=headers,
-        auth=auth,
-    )
+    response = http_request(server, url, headers=headers)
     response_json = process_response(response)
     return response_json
 
 # Uses the LiquidFiles File Requests API to request a file.
-# See https://man.liquidfiles.com/api/file_request_api.html
+# See https://docs.liquidfiles.com/api/v4.0/file_request
 def liquidfiles_file_request(server, api_key, expires, to, subject, message, message_file):
-    api_url = server + '/requests'
+    url = '/requests'
     attachment_ids = []
-    auth = requests.auth.HTTPBasicAuth(api_key, 'x')
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
+        "Authorization": "Basic {}".format(b64encode(bytes(f"{api_key}:x", "utf-8")).decode("ascii")),
     }
 
     if message_file:
@@ -238,7 +241,7 @@ def liquidfiles_file_request(server, api_key, expires, to, subject, message, mes
     else:
         message_body = message
 
-    data = {
+    body = {
         "request": {
             "recipient": to,
             "subject": subject,
@@ -249,58 +252,45 @@ def liquidfiles_file_request(server, api_key, expires, to, subject, message, mes
             "bcc_myself": False,
         }
     }
-    response = requests.post(
-        api_url,
-        headers=headers,
-        auth=auth,
-        data=json.dumps(data)
-    )
+    response = http_request(server, url, method='POST', body=json.dumps(body), headers=headers)
     response_json = process_response(response)
     return response_json
 
-# Uses the LiquidFiles Messages API to show client information.
-# See https://man.liquidfiles.com/api/client_info_request.html
+# Uses the LiquidFiles Account API to show client information.
+# See https://docs.liquidfiles.com/api/v4.0/client_info_request.html
 def liquidfiles_info(server, api_key):
-    api_url = server + '/account'
-    auth = requests.auth.HTTPBasicAuth(api_key, 'x')
+    url = '/account'
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
+        "Authorization": "Basic {}".format(b64encode(bytes(f"{api_key}:x", "utf-8")).decode("ascii")),
     }
-    response = requests.get(
-        api_url,
-        headers=headers,
-        auth=auth,
-    )
+    response = http_request(server, url, headers=headers)
     response_json = process_response(response)
     return response_json
 
 # Uses the LiquidFiles Messages API to list messages sent to you.
-# See https://man.liquidfiles.com/api/messages/list_messages_and_download_attachments.html
+# See https://docs.liquidfiles.com/api/v4.0/messages/list_messages_and_download_attachments.html
 def liquidfiles_messages(server, api_key):
-    api_url = server + '/messages/inbox'
-    auth = requests.auth.HTTPBasicAuth(api_key, 'x')
+    url = '/messages/inbox'
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
+        "Authorization": "Basic {}".format(b64encode(bytes(f"{api_key}:x", "utf-8")).decode("ascii")),
     }
-    response = requests.get(
-        api_url,
-        headers=headers,
-        auth=auth,
-    )
+    response = http_request(server, url, headers=headers)
     response_json = process_response(response)
     return response_json
-    
-# Uses the LiquidFiles Message API to upload given files and
-# send a secure message. See https://man.liquidfiles.com/api/messages
+
+# Uses the LiquidFiles Messages API to upload given files and
+# send a secure message. See https://docs.liquidfiles.com/api/v4.0/messages
 def liquidfiles_send(server, api_key, expires, to, subject, message, message_file, file_type, filenames):
-    api_url = server + '/message'
+    url = server + '/message'
     attachment_ids = []
-    auth = requests.auth.HTTPBasicAuth(api_key, 'x')
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
+        "Authorization": "Basic {}".format(b64encode(bytes(f"{api_key}:x", "utf-8")).decode("ascii")),
     }
 
     if message_file:
@@ -328,7 +318,7 @@ def liquidfiles_send(server, api_key, expires, to, subject, message, message_fil
     elif file_type == 'attachments':
         attachment_ids = filenames
 
-    data = {
+    body = {
         "message": {
             "recipients": to.split(","),
             "subject": subject,
@@ -342,12 +332,8 @@ def liquidfiles_send(server, api_key, expires, to, subject, message, message_fil
             "attachments": attachment_ids,
         }
     }
-    response = requests.post(
-        api_url,
-        headers=headers,
-        auth=auth,
-        data=json.dumps(data)
-    )
+
+    response = http_request(server, url, method='POST', body=json.dumps(body), headers=headers)
     response_json = process_response(response)
     return response_json
 
@@ -382,6 +368,14 @@ def parse_args(unparsed_args):
 
     # The 'attach' sub-command arguments
     attach_parser = subparsers.add_parser('attach', help='upload given files and returns the ids')
+    attach_parser.add_argument(
+            '--type',
+            dest='attach_type',
+            choices=['filelink', 'message'],
+            default='message',
+            metavar='TYPE',
+            help='type of attachment of files being sent [%(choices)s] (default: %(default)s)'
+            )
     attach_parser.add_argument(
             'file',
             nargs='+',
@@ -492,7 +486,7 @@ def parse_args(unparsed_args):
             type=expire_date,
             help='expire date for the message (default: %(default)s)'
             )
-    file_request_parser_message_group = file_request_parser.add_mutually_exclusive_group()
+    file_request_parser_message_group = file_request_parser.add_mutually_exclusive_group(required=True)
     file_request_parser_message_group.add_argument(
             '--message',
             dest='message',
@@ -512,6 +506,7 @@ def parse_args(unparsed_args):
             dest='subject',
             action='store',
             metavar='SUB',
+            required=True,
             help='subject of composed email'
             )
     file_request_parser.add_argument(
@@ -620,7 +615,8 @@ def process_args(args):
             response = liquidfiles_attach(
                     server=SERVER,
                     api_key=API_KEY,
-                    filename=f)
+                    filename=f,
+                    attach_type=args.attach_type)
             print(json.dumps(response, indent=4))
     if args.command == 'attachments':
         response = liquidfiles_attachments(
@@ -723,17 +719,20 @@ def process_config():
 # Takes a requests response and verifies it. Returns the
 # json output from the server's response
 def process_response(response):
-    if response.status_code == requests.codes.unauthorized or \
-       response.status_code == requests.codes.internal_server_error:
-        response.raise_for_status()
+    if response.status == HTTPStatus.UNAUTHORIZED or \
+       response.status == HTTPStatus.INTERNAL_SERVER_ERROR:
+        http_print_status(response, file=sys.stderr)
+        sys.exit(1)
 
-    response_json = response.json()
+    response_string = response.read().decode('utf-8')
+    response_json = json.loads(response_string)
 
     # LiquidFiles provides error messages in its JSON output
     # if it is unable to process your request (422). This may happen
     # when, for example, you set a file expiration date beyond
     # what the system allows you to
-    if response.status_code == requests.codes.unprocessable:
+    if response.status == HTTPStatus.UNPROCESSABLE_ENTITY:
+        http_print_status(response, file=sys.stderr)
         for e in response_json["errors"]:
             print(e, file=sys.stderr)
         sys.exit(1)
